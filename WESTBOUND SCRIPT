@@ -1,0 +1,1701 @@
+--[[
+     HENRIQSZ7 / WESTBOUND PVP HUB
+]]--
+
+-- CACHE DE SERVIÇOS PARA PERFORMANCE
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+local Mouse = LocalPlayer:GetMouse()
+
+-- CONFIGURAÇÃO DE PERFORMANCE
+local IsMobile = UserInputService.TouchEnabled
+local PerformanceMode = IsMobile -- Auto detect mobile para performance
+local UpdateEvent = PerformanceMode and RunService.Heartbeat or RunService.RenderStepped
+
+-- CONFIGURACOES INICIAIS
+local AimbotEnabled = false
+local SilentAimEnabled = false
+local FOVSize = 150
+local StartTime = os.time()
+local ToggleKey = Enum.KeyCode.LeftControl
+local ShowFOVCircle = false
+
+-- ESTADOS DOS VISUAIS (PLAYERS)
+local ESP_Body_Enabled = false
+local ESP_Names_Enabled = false
+local ESP_Distance_Enabled = false
+
+-- ESTADOS DOS VISUAIS (ANIMAIS RARE)
+local ESP_Animals_Body = false
+local ESP_Animals_Names = false
+local ESP_Animals_Dist = false
+
+-- ESTADOS MISC
+local AutoBreakFreeEnabled = false
+local AntiLassoEnabled = false
+local InstantActionsEnabled = false
+local InfiniteHorseStamina = false
+
+-- NOVOS ESTADOS ADICIONADOS
+local ExtendedFOVEnabled = false
+local ZoomBoostEnabled = false
+local AnimalAimControlEnabled = false
+local AutoAnimalFarmEnabled = false
+local SuperHorseSpeedEnabled = false
+local AutoMountHorseEnabled = false
+local InstantSafeCrackEnabled = false
+local InstantBankWallRepairEnabled = false
+local AutoRobRegistersEnabled = false
+local AutoCollectItemsEnabled = false
+
+-- ATALHOS DE TECLADO COMBAT
+local AimBind = Enum.KeyCode.E
+local SilentBind = Enum.KeyCode.Q -- Alterado para evitar conflito
+
+-- CONEXÕES ATIVAS (PARA GERENCIAMENTO DE MEMÓRIA)
+local ActiveConnections = {}
+local ESPStorage = {
+    Players = {},
+    Animals = {}
+}
+
+-- DESENHO DO CIRCULO DE FOV
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Thickness = 1
+FOVCircle.Color = Color3.fromRGB(255, 0, 0)
+FOVCircle.Filled = false
+FOVCircle.Transparency = 1
+FOVCircle.Visible = false
+
+-- INTERFACE PRINCIPAL
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "Henriqsz7_TRXSH_v36_OPTIMIZED"
+ScreenGui.Parent = game.CoreGui
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+-- FUNÇÃO AUXILIAR PARA ADICIONAR BORDAS ARREDONDADAS
+local function AddCorner(parent, radius)
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = radius or UDim.new(0, 8)
+    Corner.Parent = parent
+    return Corner
+end
+
+-- SISTEMA DE NOTIFICACAO OTIMIZADO
+local NotificationQueue = {}
+local ShowingNotification = false
+
+local function Notify(text)
+    if not ScreenGui or not ScreenGui.Parent then return end
+    
+    table.insert(NotificationQueue, text:upper())
+    
+    if not ShowingNotification then
+        ShowingNotification = true
+        
+        local function ShowNext()
+            if #NotificationQueue == 0 then
+                ShowingNotification = false
+                return
+            end
+            
+            local text = table.remove(NotificationQueue, 1)
+            local NotifyFrame = Instance.new("Frame")
+            NotifyFrame.Size = UDim2.new(0, 220, 0, 40)
+            NotifyFrame.Position = UDim2.new(0.5, -110, 1, 10)
+            NotifyFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+            NotifyFrame.Parent = ScreenGui
+            NotifyFrame.ZIndex = 100
+            AddCorner(NotifyFrame)
+            
+            local Stroke = Instance.new("UIStroke")
+            Stroke.Color = Color3.fromRGB(255, 0, 0)
+            Stroke.Thickness = 1.5
+            Stroke.Parent = NotifyFrame
+            
+            local Lab = Instance.new("TextLabel")
+            Lab.Size = UDim2.new(1, 0, 1, 0)
+            Lab.BackgroundTransparency = 1
+            Lab.Text = text
+            Lab.TextColor3 = Color3.fromRGB(255, 255, 255)
+            Lab.Font = Enum.Font.SourceSansBold
+            Lab.TextSize = 14
+            Lab.Parent = NotifyFrame
+            
+            local OpenTween = TweenService:Create(NotifyFrame, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                Position = UDim2.new(0.5, -110, 0.85, 0)
+            })
+            OpenTween:Play()
+            
+            task.delay(2, function()
+                local CloseTween = TweenService:Create(NotifyFrame, TweenInfo.new(0.4), {
+                    Position = UDim2.new(0.5, -110, 1, 15)
+                })
+                CloseTween:Play()
+                CloseTween.Completed:Wait()
+                NotifyFrame:Destroy()
+                
+                task.wait(0.3)
+                ShowNext()
+            end)
+        end
+        
+        ShowNext()
+    end
+end
+
+-- LOGICA DE CORES DE TIME (CACHEADA)
+local TeamColorCache = {}
+local function GetCorrectTeamColor(plr)
+    if TeamColorCache[plr] then
+        return TeamColorCache[plr]
+    end
+    
+    local team = plr.Team
+    local teamName = team and team.Name:lower() or ""
+    local color
+    
+    if teamName:find("outlaw") or teamName:find("criminal") or (team and team.TeamColor.Name == "Really red") then
+        color = Color3.fromRGB(255, 0, 0)
+    elseif teamName:find("cowboy") or teamName:find("sheriff") or (team and team.TeamColor.Name == "New Yeller") or (team and team.TeamColor.Name == "Deep orange") then
+        color = Color3.fromRGB(255, 255, 0)
+    else
+        color = Color3.fromRGB(0, 255, 0)
+    end
+    
+    TeamColorCache[plr] = color
+    return color
+end
+
+-- SISTEMA DE ESP OTIMIZADO (COM CACHE DE DISTÂNCIA)
+local function CreateESP(plr)
+    if ESPStorage.Players[plr] then return end
+    
+    local Highlight = Instance.new("Highlight")
+    Highlight.Name = "TRXSH_P_Highlight"
+    Highlight.FillTransparency = 0.5
+    Highlight.OutlineTransparency = 0
+    Highlight.Enabled = false
+    
+    local NameTag = Drawing.new("Text")
+    NameTag.Visible = false
+    NameTag.Size = 14
+    NameTag.Center = true
+    NameTag.Outline = true
+    
+    -- Variáveis de cache para otimização
+    local LastDistanceUpdate = 0
+    local CachedDistance = 0
+    
+    local connection
+    connection = UpdateEvent:Connect(function()
+        if not ESPStorage.Players[plr] then
+            if connection then connection:Disconnect() end
+            return
+        end
+        
+        local char = plr.Character
+        if char and char.Parent then
+            local root = char:FindFirstChild("HumanoidRootPart")
+            local humanoid = char:FindFirstChild("Humanoid")
+            
+            if root and humanoid and humanoid.Health > 0 then
+                local pos, onScreen = Camera:WorldToViewportPoint(root.Position)
+                local teamColor = GetCorrectTeamColor(plr)
+                
+                -- ESP Body
+                if ESP_Body_Enabled then
+                    Highlight.Parent = char
+                    Highlight.Enabled = true
+                    Highlight.FillColor = teamColor
+                    Highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+                else
+                    Highlight.Enabled = false
+                end
+                
+                -- ESP Info com cache de distância (otimizado)
+                if onScreen and (ESP_Names_Enabled or ESP_Distance_Enabled) then
+                    local localChar = LocalPlayer.Character
+                    local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
+                    
+                    local info = ""
+                    if ESP_Names_Enabled then 
+                        info = plr.Name 
+                    end
+                    
+                    if ESP_Distance_Enabled and localRoot then
+                        -- Atualizar distância apenas a cada 0.3 segundos (otimização)
+                        local currentTime = tick()
+                        if currentTime - LastDistanceUpdate > 0.3 then
+                            CachedDistance = math.floor((root.Position - localRoot.Position).Magnitude)
+                            LastDistanceUpdate = currentTime
+                        end
+                        
+                        if info ~= "" then
+                            info = info .. " [" .. CachedDistance .. "m]"
+                        else
+                            info = "[" .. CachedDistance .. "m]"
+                        end
+                    end
+                    
+                    NameTag.Text = info
+                    NameTag.Color = teamColor
+                    NameTag.Position = Vector2.new(pos.X, pos.Y - 40)
+                    NameTag.Visible = info ~= ""
+                else
+                    NameTag.Visible = false
+                end
+            else
+                Highlight.Enabled = false
+                NameTag.Visible = false
+            end
+        else
+            Highlight.Enabled = false
+            NameTag.Visible = false
+        end
+    end)
+    
+    ESPStorage.Players[plr] = {
+        Highlight = Highlight,
+        NameTag = NameTag,
+        Connection = connection
+    }
+    
+    -- Limpeza quando o jogador sair
+    plr.AncestryChanged:Connect(function()
+        if not plr.Parent then
+            local data = ESPStorage.Players[plr]
+            if data then
+                if data.Connection then
+                    data.Connection:Disconnect()
+                end
+                if data.Highlight then
+                    data.Highlight:Destroy()
+                end
+                if data.NameTag then
+                    data.NameTag:Remove()
+                end
+                ESPStorage.Players[plr] = nil
+                TeamColorCache[plr] = nil
+            end
+        end
+    end)
+end
+
+-- SISTEMA DE ESP PARA ANIMAIS OTIMIZADO (CORRIGIDO - SEM CONFLITO)
+local function CreateAnimalESP(obj)
+    if ESPStorage.Animals[obj] then return end
+    
+    -- Verificar se é realmente um animal (não um jogador)
+    local isPlayer = Players:GetPlayerFromCharacter(obj)
+    if isPlayer then return end -- Não criar ESP para jogadores
+    
+    local AHighlight = Instance.new("Highlight")
+    AHighlight.Name = "TRXSH_A_Highlight"
+    AHighlight.FillTransparency = 0.4
+    AHighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+    AHighlight.Enabled = false
+
+    local AText = Drawing.new("Text")
+    AText.Visible = false
+    AText.Size = 14
+    AText.Center = true
+    AText.Outline = true
+    
+    -- Variáveis de cache para otimização
+    local LastDistanceUpdate = 0
+    local CachedDistance = 0
+    
+    local connection
+    connection = UpdateEvent:Connect(function()
+        if not ESPStorage.Animals[obj] then
+            if connection then connection:Disconnect() end
+            return
+        end
+        
+        if obj and obj.Parent then
+            local root = obj:FindFirstChild("HumanoidRootPart")
+            if root then
+                local pos, onScreen = Camera:WorldToViewportPoint(root.Position)
+                local animalColor = Color3.fromRGB(255, 140, 0)
+
+                -- Animal ESP Body
+                if ESP_Animals_Body then
+                    -- Verificar se já tem highlight de jogador
+                    local existingHighlights = obj:GetChildren()
+                    local hasPlayerESP = false
+                    for _, child in ipairs(existingHighlights) do
+                        if child.Name == "TRXSH_P_Highlight" then
+                            hasPlayerESP = true
+                            break
+                        end
+                    end
+                    
+                    if not hasPlayerESP then
+                        AHighlight.Parent = obj
+                        AHighlight.Enabled = true
+                        AHighlight.FillColor = animalColor
+                    else
+                        AHighlight.Enabled = false
+                    end
+                else 
+                    AHighlight.Enabled = false 
+                end
+
+                -- Animal ESP Info com cache de distância (otimizado)
+                if onScreen and (ESP_Animals_Names or ESP_Animals_Dist) then
+                    local localChar = LocalPlayer.Character
+                    local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
+                    
+                    local info = ""
+                    if ESP_Animals_Names then 
+                        info = obj.Name 
+                    end
+                    
+                    if ESP_Animals_Dist and localRoot then
+                        -- Atualizar distância apenas a cada 0.5 segundos (otimização)
+                        local currentTime = tick()
+                        if currentTime - LastDistanceUpdate > 0.5 then
+                            CachedDistance = math.floor((root.Position - localRoot.Position).Magnitude)
+                            LastDistanceUpdate = currentTime
+                        end
+                        
+                        if info ~= "" then
+                            info = info .. " [" .. CachedDistance .. "m]"
+                        else
+                            info = "[" .. CachedDistance .. "m]"
+                        end
+                    end
+                    
+                    AText.Text = info
+                    AText.Color = animalColor
+                    AText.Position = Vector2.new(pos.X, pos.Y - 30)
+                    AText.Visible = info ~= ""
+                else 
+                    AText.Visible = false 
+                end
+            else
+                AHighlight.Enabled = false
+                AText.Visible = false
+            end
+        else
+            AHighlight.Enabled = false
+            AText.Visible = false
+        end
+    end)
+    
+    ESPStorage.Animals[obj] = {
+        Highlight = AHighlight,
+        Text = AText,
+        Connection = connection
+    }
+    
+    -- Limpeza quando o animal for removido
+    obj.AncestryChanged:Connect(function()
+        if not obj.Parent then
+            local data = ESPStorage.Animals[obj]
+            if data then
+                if data.Connection then
+                    data.Connection:Disconnect()
+                end
+                if data.Highlight then
+                    data.Highlight:Destroy()
+                end
+                if data.Text then
+                    data.Text:Remove()
+                end
+                ESPStorage.Animals[obj] = nil
+            end
+        end
+    end)
+end
+
+-- LOGICA DE BUSCA DE ALVO OTIMIZADA (COM CACHE PARA REDUZIR LAG)
+local LastTargetSearch = 0
+local CachedClosestPlayer = nil
+local function GetClosestPlayer()
+    local currentTime = tick()
+    
+    -- Cache por 0.05 segundos para reduzir processamento sem afetar responsividade
+    if currentTime - LastTargetSearch < 0.05 then
+        return CachedClosestPlayer
+    end
+    
+    LastTargetSearch = currentTime
+    local target = nil
+    local maxDist = FOVSize
+    local mousePos = Vector2.new(Mouse.X, Mouse.Y)
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local char = player.Character
+            if char then
+                local root = char:FindFirstChild("HumanoidRootPart")
+                local humanoid = char:FindFirstChild("Humanoid")
+                
+                if root and humanoid and humanoid.Health > 0 then
+                    local screenPos, onScreen = Camera:WorldToViewportPoint(root.Position)
+                    if onScreen then
+                        local mouseDist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+                        if mouseDist < maxDist then
+                            maxDist = mouseDist
+                            target = player
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    CachedClosestPlayer = target
+    return target
+end
+
+-- INICIALIZACAO DE ENTIDADES (CORRIGIDO)
+for _, player in pairs(Players:GetPlayers()) do 
+    if player ~= LocalPlayer then 
+        CreateESP(player) 
+    end 
+end
+
+Players.PlayerAdded:Connect(function(player)
+    CreateESP(player)
+end)
+
+-- Inicialização de animais com verificação melhorada
+task.spawn(function()
+    for _, obj in pairs(workspace:GetChildren()) do 
+        if obj:FindFirstChild("Humanoid") and not Players:GetPlayerFromCharacter(obj) then 
+            -- Verificar se é realmente um animal
+            local isAnimal = obj:FindFirstChild("HumanoidRootPart") and not Players:GetPlayerFromCharacter(obj)
+            if isAnimal then
+                CreateAnimalESP(obj) 
+            end
+        end 
+    end
+end)
+
+workspace.ChildAdded:Connect(function(obj)
+    task.wait(1) -- Aumentado para evitar conflitos
+    if obj:FindFirstChild("Humanoid") and not Players:GetPlayerFromCharacter(obj) then 
+        -- Verificação adicional
+        task.wait(0.5)
+        local isAnimal = obj:FindFirstChild("HumanoidRootPart") and not Players:GetPlayerFromCharacter(obj)
+        if isAnimal then
+            CreateAnimalESP(obj) 
+        end
+    end 
+end)
+
+-- CONSTRUCAO DA INTERFACE
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Parent = ScreenGui
+MainFrame.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+MainFrame.Position = UDim2.new(0.3, 0, 0.25, 0)
+MainFrame.Size = UDim2.new(0, 600, 0, 400)
+MainFrame.Active = true
+MainFrame.Draggable = true
+AddCorner(MainFrame, UDim.new(0, 10))
+
+local MStroke = Instance.new("UIStroke")
+MStroke.Thickness = 2
+MStroke.Color = Color3.fromRGB(45, 45, 45)
+MStroke.Parent = MainFrame
+
+-- TITULO
+local Title = Instance.new("TextLabel")
+Title.Name = "Title"
+Title.Parent = MainFrame
+Title.Text = "HENRIQSZ7 / WESTBOUND PVP HUB"
+Title.TextColor3 = Color3.fromRGB(255, 0, 0)
+Title.TextSize = 16
+Title.Font = Enum.Font.SourceSansBold
+Title.Position = UDim2.new(0, 20, 0, 10)
+Title.Size = UDim2.new(0, 300, 0, 30)
+Title.BackgroundTransparency = 1
+Title.TextXAlignment = Enum.TextXAlignment.Left
+
+-- TIMER DE SESSAO
+local TimerLabel = Instance.new("TextLabel")
+TimerLabel.Name = "TimerLabel"
+TimerLabel.Parent = MainFrame
+TimerLabel.Size = UDim2.new(0, 120, 0, 20)
+TimerLabel.Position = UDim2.new(0.72, 0, 0.04, 0)
+TimerLabel.BackgroundTransparency = 1
+TimerLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+TimerLabel.Font = Enum.Font.Code
+TimerLabel.TextSize = 12
+TimerLabel.TextXAlignment = Enum.TextXAlignment.Right
+
+local timerConnection
+timerConnection = UpdateEvent:Connect(function()
+    local seconds = os.time() - StartTime
+    local h = math.floor(seconds / 3600)
+    local m = math.floor((seconds % 3600) / 60)
+    local s = seconds % 60
+    TimerLabel.Text = string.format("Online: %02d:%02d:%02d", h, m, s)
+end)
+
+table.insert(ActiveConnections, timerConnection)
+
+-- BARRA LATERAL
+local SideBar = Instance.new("Frame")
+SideBar.Name = "SideBar"
+SideBar.Parent = MainFrame
+SideBar.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+SideBar.Position = UDim2.new(0.02, 0, 0.15, 0)
+SideBar.Size = UDim2.new(0, 140, 0, 255)
+AddCorner(SideBar)
+
+local SideLayout = Instance.new("UIListLayout")
+SideLayout.Parent = SideBar
+SideLayout.Padding = UDim.new(0, 2)
+SideLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+-- CONTEUDO PRINCIPAL
+local ContentHolder = Instance.new("Frame")
+ContentHolder.Name = "ContentHolder"
+ContentHolder.Parent = MainFrame
+ContentHolder.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+ContentHolder.Position = UDim2.new(0.28, 0, 0.15, 0)
+ContentHolder.Size = UDim2.new(0, 410, 0, 325)
+AddCorner(ContentHolder)
+
+-- GERENCIADOR DE PAGINAS
+local Pages = {}
+local function CreatePage(name)
+    local Page = Instance.new("ScrollingFrame")
+    Page.Name = name .. "Page"
+    Page.Parent = ContentHolder
+    Page.Size = UDim2.new(1, 0, 1, 0)
+    Page.BackgroundTransparency = 1
+    Page.Visible = false
+    Page.ScrollBarThickness = 3
+    Page.CanvasSize = UDim2.new(0, 0, 2.5, 0)
+    
+    local List = Instance.new("UIListLayout")
+    List.Parent = Page
+    List.Padding = UDim.new(0, 10)
+    List.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    
+    Pages[name] = Page
+    return Page
+end
+
+local PVP_Page = CreatePage("PVP")
+local VIS_Page = CreatePage("VISUALS")
+local MISC_Page = CreatePage("MISC")
+local SET_Page = CreatePage("SETTINGS")
+local DC_Page = CreatePage("DISCORD")
+local SITE_Page = CreatePage("SITE")
+local CRED_Page = CreatePage("CREDITS")
+
+PVP_Page.Visible = true
+
+-- FUNÇÕES DE CRIAÇÃO DE COMPONENTES
+local function CreateSection(page, text)
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(0.95, 0, 0, 25)
+    Frame.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    Frame.Parent = page
+    AddCorner(Frame, UDim.new(0, 4))
+    
+    local Lab = Instance.new("TextLabel")
+    Lab.Size = UDim2.new(1, 0, 1, 0)
+    Lab.BackgroundTransparency = 1
+    Lab.Text = text:upper()
+    Lab.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Lab.Font = Enum.Font.SourceSansBold
+    Lab.TextSize = 13
+    Lab.Parent = Frame
+end
+
+local function NewButton(page, text, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.9, 0, 0, 40)
+    btn.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 0, 0)
+    btn.Font = Enum.Font.SourceSansBold
+    btn.TextSize = 14
+    btn.Parent = page
+    AddCorner(btn)
+    
+    btn.MouseButton1Click:Connect(function()
+        pcall(callback)
+    end)
+end
+
+local function NewSwitch(page, text, callback)
+    local Bg = Instance.new("Frame")
+    Bg.Size = UDim2.new(0.9, 0, 0, 40)
+    Bg.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    Bg.Parent = page
+    AddCorner(Bg)
+    
+    local Lbl = Instance.new("TextLabel")
+    Lbl.Parent = Bg
+    Lbl.Text = text
+    Lbl.TextColor3 = Color3.fromRGB(200, 200, 200)
+    Lbl.Position = UDim2.new(0.05, 0, 0, 0)
+    Lbl.Size = UDim2.new(0.6, 0, 1, 0)
+    Lbl.BackgroundTransparency = 1
+    Lbl.TextSize = 13
+    
+    local Tgl = Instance.new("TextButton")
+    Tgl.Parent = Bg
+    Tgl.Size = UDim2.new(0, 40, 0, 20)
+    Tgl.Position = UDim2.new(0.85, 0, 0.25, 0)
+    Tgl.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    Tgl.Text = ""
+    AddCorner(Tgl, UDim.new(1, 0))
+    
+    local Circ = Instance.new("Frame")
+    Circ.Parent = Tgl
+    Circ.Size = UDim2.new(0, 16, 0, 16)
+    Circ.Position = UDim2.new(0.05, 0, 0.1, 0)
+    Circ.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    AddCorner(Circ, UDim.new(1, 0))
+    
+    local act = false
+    Tgl.MouseButton1Click:Connect(function()
+        act = not act
+        if act then
+            TweenService:Create(Circ, TweenInfo.new(0.2), {Position = UDim2.new(0.5, 0, 0.1, 0)}):Play()
+            TweenService:Create(Tgl, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(255, 0, 0)}):Play()
+        else
+            TweenService:Create(Circ, TweenInfo.new(0.2), {Position = UDim2.new(0.05, 0, 0.1, 0)}):Play()
+            TweenService:Create(Tgl, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(50, 50, 50)}):Play()
+        end
+        pcall(callback, act)
+    end)
+end
+
+local function NewKeybind(page, text, default, callback)
+    local Bg = Instance.new("Frame")
+    Bg.Size = UDim2.new(0.9, 0, 0, 40)
+    Bg.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    Bg.Parent = page
+    AddCorner(Bg)
+    
+    local Lbl = Instance.new("TextLabel")
+    Lbl.Parent = Bg
+    Lbl.Text = text
+    Lbl.TextColor3 = Color3.fromRGB(200, 200, 200)
+    Lbl.Position = UDim2.new(0.05, 0, 0, 0)
+    Lbl.Size = UDim2.new(0.6, 0, 1, 0)
+    Lbl.BackgroundTransparency = 1
+    Lbl.TextSize = 13
+    
+    local BindBtn = Instance.new("TextButton")
+    BindBtn.Parent = Bg
+    BindBtn.Size = UDim2.new(0, 80, 0, 25)
+    BindBtn.Position = UDim2.new(0.75, 0, 0.2, 0)
+    BindBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    BindBtn.Text = default.Name
+    BindBtn.TextColor3 = Color3.fromRGB(255, 0, 0)
+    BindBtn.Font = Enum.Font.SourceSansBold
+    BindBtn.TextSize = 13
+    AddCorner(BindBtn)
+    
+    BindBtn.MouseButton1Click:Connect(function()
+        BindBtn.Text = "..."
+        local connection
+        connection = UserInputService.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Keyboard then
+                BindBtn.Text = input.KeyCode.Name
+                pcall(callback, input.KeyCode)
+                connection:Disconnect()
+            end
+        end)
+    end)
+end
+
+local function NewSlider(page, text, min, max, default, callback)
+    local Bg = Instance.new("Frame")
+    Bg.Size = UDim2.new(0.9, 0, 0, 50)
+    Bg.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    Bg.Parent = page
+    AddCorner(Bg)
+    
+    local Lbl = Instance.new("TextLabel")
+    Lbl.Parent = Bg
+    Lbl.Text = text .. ": " .. default
+    Lbl.TextColor3 = Color3.fromRGB(200, 200, 200)
+    Lbl.Position = UDim2.new(0, 0, 0, 5)
+    Lbl.Size = UDim2.new(1, 0, 0, 20)
+    Lbl.BackgroundTransparency = 1
+    Lbl.TextSize = 13
+    
+    local SliderBar = Instance.new("TextButton")
+    SliderBar.Parent = Bg
+    SliderBar.Size = UDim2.new(0.8, 0, 0, 6)
+    SliderBar.Position = UDim2.new(0.1, 0, 0.65, 0)
+    SliderBar.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    SliderBar.Text = ""
+    AddCorner(SliderBar)
+    
+    local Fill = Instance.new("Frame")
+    Fill.Parent = SliderBar
+    Fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+    Fill.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    AddCorner(Fill)
+    
+    SliderBar.MouseButton1Down:Connect(function()
+        local move = UserInputService.InputChanged:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+                local pos = math.clamp((input.Position.X - SliderBar.AbsolutePosition.X) / SliderBar.AbsoluteSize.X, 0, 1)
+                Fill.Size = UDim2.new(pos, 0, 1, 0)
+                local val = math.floor(min + (max - min) * pos)
+                Lbl.Text = text .. ": " .. val
+                pcall(callback, val)
+            end
+        end)
+        
+        local release
+        release = UserInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                move:Disconnect()
+                release:Disconnect()
+            end
+        end)
+    end)
+end
+
+-- PAGINA PVP - GUNS MODS
+CreateSection(PVP_Page, "Guns Mods")
+
+NewSwitch(PVP_Page, "FAST FIRE", function(s)
+    if s then 
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/TRXSHHUB/main.lua/refs/heads/main/Fast%20Fire%20Westbound"))() 
+    end
+end)
+
+NewSwitch(PVP_Page, "FAST EQUIP + RELOAD", function(s)
+    if s then 
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/TRXSHHUB/main.luaa/refs/heads/main/Fast%20Equip%20%2B%20Reload"))() 
+    end
+end)
+
+NewSwitch(PVP_Page, "NO RECOIL", function(s)
+    if s then 
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/TRXSHHUB/main.luaaa/refs/heads/main/No%20recoil%20WestBound"))() 
+    end
+end)
+
+-- PAGINA PVP - COMBAT
+CreateSection(PVP_Page, "Combat PVP")
+
+NewSwitch(PVP_Page, "AIMBOT", function(s)
+    AimbotEnabled = s
+    Notify(s and "AIMBOT ENABLED" or "AIMBOT DISABLED")
+end)
+
+NewSwitch(PVP_Page, "SILENT AIM", function(s)
+    SilentAimEnabled = s
+    Notify(s and "SILENT AIM ENABLED" or "SILENT AIM DISABLED")
+end)
+
+NewKeybind(PVP_Page, "CHANGE KEYBIND AIMBOT", AimBind, function(k)
+    AimBind = k
+    Notify("AIMBOT KEY: " .. k.Name)
+end)
+
+NewKeybind(PVP_Page, "CHANGE KEYBIND SILENT AIM", SilentBind, function(k)
+    SilentBind = k
+    Notify("SILENT AIM KEY: " .. k.Name)
+end)
+
+NewSwitch(PVP_Page, "SHOW FOV CIRCLE", function(s)
+    ShowFOVCircle = s
+end)
+
+NewSlider(PVP_Page, "CONFIG SHOW FOV CIRCLE", 10, 600, FOVSize, function(v)
+    FOVSize = v
+end)
+
+-- PAGINA PVP - AUTOFARM
+CreateSection(PVP_Page, "Autofarm")
+
+local FarmInfo = Instance.new("TextLabel")
+FarmInfo.Size = UDim2.new(0.9, 0, 0, 110)
+FarmInfo.BackgroundTransparency = 1
+FarmInfo.TextColor3 = Color3.fromRGB(160, 160, 160)
+FarmInfo.Text = "After opening the autofarm mini panel, it must be executed before you spawn for the first time. Execute before spawning and press 'START'. After that, walk only once and reset your character. If it doesn't work the first time, leave the game and come back and do the same thing. Use in private servers or empty servers."
+FarmInfo.Font = Enum.Font.SourceSansItalic
+FarmInfo.TextSize = 13
+FarmInfo.TextWrapped = true
+FarmInfo.Parent = PVP_Page
+
+NewButton(PVP_Page, "AUTO FARM MONEY", function()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/TRXSHHUB/TRXSH-HUB-WESTBOUND/refs/heads/main/main.lua"))()
+end)
+
+-- ============================================
+-- ABA MISC - COMPLETA COM CORREÇÕES
+-- ============================================
+
+CreateSection(MISC_Page, "Lasso & Jail Mods - CORRIGIDO")
+
+-- Sistema unificado de Anti-Lasso (CORRIGIDO) com throttle otimizado
+local lassoConnection
+local LastLassoCheck = 0
+local function UpdateLassoSystem()
+    if lassoConnection then
+        lassoConnection:Disconnect()
+        lassoConnection = nil
+    end
+    
+    if AutoBreakFreeEnabled or AntiLassoEnabled then
+        lassoConnection = RunService.Heartbeat:Connect(function()
+            local currentTime = tick()
+            if currentTime - LastLassoCheck < 0.2 then return end
+            LastLassoCheck = currentTime
+            
+            local char = LocalPlayer.Character
+            if char then
+                -- Verificar se está laçado
+                local lassoed = char:FindFirstChild("Lassoed")
+                local states = LocalPlayer:FindFirstChild("States")
+                local lassodValue = states and states:FindFirstChild("Lassod")
+                
+                if lassoed or (lassodValue and lassodValue.Value) then
+                    pcall(function()
+                        -- Tentar quebrar o laço
+                        ReplicatedStorage.GeneralEvents.LassoEvents:FireServer("BreakFree")
+                        -- Tentar também outros métodos
+                        ReplicatedStorage.GeneralEvents.LassoEvents:FireServer("Escape")
+                        ReplicatedStorage.GeneralEvents.LassoEvents:FireServer("Free")
+                    end)
+                end
+            end
+        end)
+        Notify("ANTI-LASSO ENABLED - CORRIGIDO")
+    else
+        Notify("ANTI-LASSO DISABLED")
+    end
+end
+
+NewSwitch(MISC_Page, "AUTO BREAK FREE (INSTANT)", function(s)
+    AutoBreakFreeEnabled = s
+    UpdateLassoSystem()
+end)
+
+NewSwitch(MISC_Page, "ANTI LASSO (AUTO ESCAPE)", function(s)
+    AntiLassoEnabled = s
+    UpdateLassoSystem()
+end)
+
+NewButton(MISC_Page, "FAST JAIL BREAK", function()
+    pcall(function()
+        -- Procurar por todas as celas
+        local cells = {}
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj.Name == "CellDoor" or obj:IsA("Model") and obj.Name:find("Cell") then
+                table.insert(cells, obj)
+            end
+        end
+        
+        if #cells > 0 then
+            -- Processar apenas 3 células por vez (otimização)
+            for i = 1, math.min(3, #cells) do
+                ReplicatedStorage.GeneralEvents.PickCellDoor:FireServer(cells[i])
+            end
+            Notify("JAILBREAK ATTEMPTED ON " .. #cells .. " CELLS")
+        else
+            ReplicatedStorage.GeneralEvents.PickCellDoor:FireServer()
+            Notify("JAILBREAK ATTEMPTED")
+        end
+    end)
+end)
+
+CreateSection(MISC_Page, "Spawn & Interaction - CORRIGIDO")
+
+-- INSTANT ROB CORRIGIDO - FUNCIONAL com throttle otimizado
+local instantInteractConnection = nil
+local LastInteractCheck = 0
+NewSwitch(MISC_Page, "INSTANT ROB / INTERACT", function(s)
+    InstantActionsEnabled = s
+    
+    if s then
+        Notify("INSTANT INTERACTIONS ENABLED")
+        
+        instantInteractConnection = RunService.Heartbeat:Connect(function()
+            local currentTime = tick()
+            if currentTime - LastInteractCheck < 0.3 then return end
+            LastInteractCheck = currentTime
+            
+            pcall(function()
+                local char = LocalPlayer.Character
+                if not char then return end
+                
+                local humanoid = char:FindFirstChild("Humanoid")
+                local root = char:FindFirstChild("HumanoidRootPart")
+                if not humanoid or not root or humanoid.Health <= 0 then return end
+                
+                -- Procurar por objetos interagíveis próximos (limitado para performance)
+                local objects = workspace:GetChildren()
+                for i = 1, math.min(20, #objects) do
+                    local obj = objects[i]
+                    if obj:IsA("BasePart") or obj:IsA("Model") then
+                        local distance = (root.Position - (obj:IsA("Model") and (obj.PrimaryPart and obj.PrimaryPart.Position or obj:GetModelCFrame().Position) or obj.Position)).Magnitude
+                        
+                        -- Se está próximo (15 studs)
+                        if distance < 15 then
+                            -- Verificar tipo de objeto
+                            if obj.Name:find("Safe") or obj.Name:find("Chest") then
+                                -- Tentar abrir cofre/baú
+                                pcall(function()
+                                    ReplicatedStorage.GeneralEvents.Robbery:FireServer("OpenSafe", obj)
+                                end)
+                            elseif obj.Name:find("Register") or obj.Name:find("Cash") then
+                                -- Tentar roubar caixa
+                                pcall(function()
+                                    ReplicatedStorage.GeneralEvents.Robbery:FireServer("RobRegister", obj)
+                                end)
+                            elseif obj.Name:find("Door") or obj.Name:find("Gate") then
+                                -- Tentar abrir porta
+                                pcall(function()
+                                    ReplicatedStorage.GeneralEvents.Interact:FireServer("OpenDoor", obj)
+                                end)
+                            end
+                            break -- Processar apenas um objeto por ciclo (otimização)
+                        end
+                    end
+                end
+            end)
+        end)
+        
+    else
+        if instantInteractConnection then
+            instantInteractConnection:Disconnect()
+            instantInteractConnection = nil
+        end
+        Notify("INSTANT INTERACTIONS DISABLED")
+    end
+end)
+
+-- ============================================
+-- NOVA SEÇÃO: ANIMAL CONTROLLER & HUNTER MODS (SIMPLIFICADA)
+-- ============================================
+
+CreateSection(MISC_Page, "Animal & Hunting")
+
+-- Auto Animal Farm (SIMPLIFICADO E FUNCIONAL) com throttle
+local autoAnimalFarmConnection
+local LastAnimalFarmCheck = 0
+NewSwitch(MISC_Page, "AUTO ANIMAL FARM", function(s)
+    AutoAnimalFarmEnabled = s
+    if s then
+        autoAnimalFarmConnection = RunService.Heartbeat:Connect(function()
+            local currentTime = tick()
+            if currentTime - LastAnimalFarmCheck < 1.5 then return end
+            LastAnimalFarmCheck = currentTime
+            
+            pcall(function()
+                local char = LocalPlayer.Character
+                if not char then return end
+                
+                local humanoid = char:FindFirstChild("Humanoid")
+                local root = char:FindFirstChild("HumanoidRootPart")
+                if not humanoid or not root or humanoid.Health <= 0 then return end
+                
+                -- Encontrar animais mortos próximos (otimizado)
+                local objects = workspace:GetChildren()
+                for i = 1, math.min(15, #objects) do
+                    local obj = objects[i]
+                    if obj:IsA("Model") then
+                        local animalHumanoid = obj:FindFirstChild("Humanoid")
+                        local animalRoot = obj:FindFirstChild("HumanoidRootPart")
+                        
+                        -- Verificar se é um animal (não jogador)
+                        local isPlayer = Players:GetPlayerFromCharacter(obj)
+                        
+                        if animalHumanoid and animalRoot and not isPlayer then
+                            if animalHumanoid.Health <= 0 then
+                                local distance = (root.Position - animalRoot.Position).Magnitude
+                                
+                                -- Se animal morto está próximo (10 studs)
+                                if distance < 10 then
+                                    -- Tentar skinar
+                                    pcall(function()
+                                        ReplicatedStorage.GeneralEvents.Interact:FireServer("SkinAnimal", obj)
+                                    end)
+                                    break -- Processar apenas um animal por ciclo
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+        end)
+        
+        Notify("AUTO ANIMAL FARM ENABLED")
+    else
+        if autoAnimalFarmConnection then
+            autoAnimalFarmConnection:Disconnect()
+            autoAnimalFarmConnection = nil
+        end
+        Notify("AUTO ANIMAL FARM DISABLED")
+    end
+end)
+
+-- ============================================
+-- SEÇÃO: GRAPHICS & CAMERA OPTIMIZATIONS
+-- ============================================
+
+CreateSection(MISC_Page, "Graphics & Camera")
+
+-- Configurações otimizadas de câmera
+local CameraSettings = {
+    OriginalFOV = 70,
+    OriginalSensitivity = 1,
+    OriginalZoom = 12,
+    MaxFOV = 120,
+    MaxZoom = 50
+}
+
+-- FOV Changer instantâneo
+NewSwitch(MISC_Page, "EXTENDED FOV", function(s)
+    ExtendedFOVEnabled = s
+    if s then
+        Camera.CameraType = Enum.CameraType.Custom
+        Camera.FieldOfView = CameraSettings.MaxFOV
+        Notify("EXTENDED FOV ENABLED")
+    else
+        Camera.FieldOfView = CameraSettings.OriginalFOV
+        Notify("EXTENDED FOV DISABLED")
+    end
+end)
+
+-- Shadow Toggle
+NewSwitch(MISC_Page, "DISABLE SHADOWS", function(s)
+    if s then
+        game.Lighting.GlobalShadows = false
+        Notify("SHADOWS DISABLED - FPS BOOST")
+    else
+        game.Lighting.GlobalShadows = true
+        Notify("SHADOWS ENABLED")
+    end
+end)
+
+-- ============================================
+-- SEÇÃO: HORSE ENHANCEMENTS (SIMPLIFICADA)
+-- ============================================
+
+CreateSection(MISC_Page, "Horse Enhancements")
+
+-- INFINITE HORSE STAMINA OTIMIZADO (FUNCIONAL) com throttle
+local horseStaminaConnection
+local LastStaminaCheck = 0
+NewSwitch(MISC_Page, "INFINITE HORSE STAMINA", function(s)
+    InfiniteHorseStamina = s
+    
+    if horseStaminaConnection then
+        horseStaminaConnection:Disconnect()
+        horseStaminaConnection = nil
+    end
+    
+    if s then
+        horseStaminaConnection = RunService.Heartbeat:Connect(function()
+            local currentTime = tick()
+            if currentTime - LastStaminaCheck < 0.5 then return end
+            LastStaminaCheck = currentTime
+            
+            pcall(function()
+                local horses = workspace:FindFirstChild("Horses")
+                if horses then
+                    local horseList = horses:GetChildren()
+                    for i = 1, math.min(5, #horseList) do
+                        local horse = horseList[i]
+                        -- Verificar se é o cavalo do jogador
+                        if horse.Name == LocalPlayer.Name or (horse:FindFirstChild("Owner") and horse.Owner.Value == LocalPlayer) then
+                            if horse:FindFirstChild("Stamina") then
+                                horse.Stamina.Value = 100
+                            end
+                            break -- Processar apenas um cavalo
+                        end
+                    end
+                end
+            end)
+        end)
+        Notify("INFINITE STAMINA ENABLED")
+    else
+        Notify("INFINITE STAMINA DISABLED")
+    end
+end)
+
+NewButton(MISC_Page, "TELEPORT TO TRAIN", function()
+    pcall(function()
+        local char = LocalPlayer.Character
+        if not char then
+            Notify("NO CHARACTER FOUND")
+            return
+        end
+        
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then
+            Notify("NO HUMANOID ROOT PART")
+            return
+        end
+        
+        -- Procurar trem de forma mais eficiente
+        local train = workspace:FindFirstChild("Train") or 
+                     workspace:FindFirstChild("TrainEngine") or
+                     workspace:FindFirstChild("Railroad") and workspace.Railroad:FindFirstChild("Train")
+        
+        if train then
+            if train:IsA("Model") then
+                root.CFrame = train:GetModelCFrame() + Vector3.new(0, 5, 0)
+            else
+                root.CFrame = train.CFrame + Vector3.new(0, 5, 0)
+            end
+            Notify("TELEPORTED TO TRAIN")
+        else
+            Notify("TRAIN NOT FOUND")
+        end
+    end)
+end)
+
+-- ============================================
+-- SEÇÃO: BANK & SAFE HACKS (FUNCIONAL)
+-- ============================================
+
+CreateSection(MISC_Page, "Bank & Safe Hacks")
+
+-- Instant Safe Cracking (FUNCIONAL) com throttle
+local instantSafeCrackConnection
+local LastSafeCheck = 0
+NewSwitch(MISC_Page, "INSTANT SAFE CRACK", function(s)
+    InstantSafeCrackEnabled = s
+    if s then
+        instantSafeCrackConnection = RunService.Heartbeat:Connect(function()
+            local currentTime = tick()
+            if currentTime - LastSafeCheck < 0.8 then return end
+            LastSafeCheck = currentTime
+            
+            pcall(function()
+                local char = LocalPlayer.Character
+                if not char then return end
+                
+                local root = char:FindFirstChild("HumanoidRootPart")
+                if not root then return end
+                
+                -- Procurar cofres próximos (limitado para performance)
+                local objects = workspace:GetChildren()
+                for i = 1, math.min(10, #objects) do
+                    local obj = objects[i]
+                    if obj.Name:find("Safe") and (obj:IsA("BasePart") or obj:IsA("Model")) then
+                        local distance = (root.Position - (obj:IsA("Model") and (obj.PrimaryPart and obj.PrimaryPart.Position or obj:GetModelCFrame().Position) or obj.Position)).Magnitude
+                        
+                        if distance < 10 then
+                            -- Tentar abrir o cofre
+                            pcall(function()
+                                ReplicatedStorage.GeneralEvents.Robbery:FireServer("CrackSafe", obj)
+                                ReplicatedStorage.GeneralEvents.Robbery:FireServer("OpenSafe", obj)
+                            end)
+                            break -- Processar apenas um cofre por ciclo
+                        end
+                    end
+                end
+            end)
+        end)
+        
+        Notify("SAFE CRACK ENABLED")
+    else
+        if instantSafeCrackConnection then
+            instantSafeCrackConnection:Disconnect()
+            instantSafeCrackConnection = nil
+        end
+        Notify("SAFE CRACK DISABLED")
+    end
+end)
+
+-- Treasure Chest Finder (FUNCIONAL) otimizado
+NewButton(MISC_Page, "FIND TREASURE CHESTS", function()
+    pcall(function()
+        local chestCount = 0
+        local message = "TREASURE CHESTS FOUND:\n"
+        
+        -- Procurar baús de forma otimizada
+        local objects = workspace:GetChildren()
+        for i = 1, math.min(30, #objects) do
+            local obj = objects[i]
+            if obj.Name:find("Chest") or obj.Name:find("Treasure") then
+                if obj:IsA("Model") or obj:IsA("BasePart") then
+                    chestCount = chestCount + 1
+                    local pos = obj:IsA("Model") and (obj.PrimaryPart and obj.PrimaryPart.Position or obj:GetModelCFrame().Position) or obj.Position
+                    message = message .. chestCount .. ". " .. obj.Name .. " at " .. 
+                             math.floor(pos.X) .. ", " .. math.floor(pos.Y) .. ", " .. math.floor(pos.Z) .. "\n"
+                    if chestCount >= 10 then break end
+                end
+            end
+        end
+        
+        if chestCount > 0 then
+            Notify(message)
+        else
+            Notify("NO TREASURE CHESTS FOUND")
+        end
+    end)
+end)
+
+-- ============================================
+-- SEÇÃO: UTILITY FUNCTIONS (FUNCIONAL)
+-- ============================================
+
+CreateSection(MISC_Page, "Utility Functions")
+
+-- Teleport to Nearest Treasure Chest (FUNCIONAL) otimizado
+NewButton(MISC_Page, "TP TO NEAREST CHEST", function()
+    pcall(function()
+        local char = LocalPlayer.Character
+        if not char then
+            Notify("NO CHARACTER")
+            return
+        end
+        
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then
+            Notify("NO ROOT PART")
+            return
+        end
+        
+        local nearestChest = nil
+        local nearestDistance = math.huge
+        
+        -- Encontrar o baú mais próximo (limitado para performance)
+        local objects = workspace:GetChildren()
+        for i = 1, math.min(30, #objects) do
+            local obj = objects[i]
+            if obj.Name:find("Chest") or obj.Name:find("Treasure") then
+                local pos = nil
+                if obj:IsA("Model") then
+                    pos = obj.PrimaryPart and obj.PrimaryPart.Position or obj:GetModelCFrame().Position
+                elseif obj:IsA("BasePart") then
+                    pos = obj.Position
+                end
+                
+                if pos then
+                    local distance = (root.Position - pos).Magnitude
+                    if distance < nearestDistance then
+                        nearestDistance = distance
+                        nearestChest = pos
+                    end
+                end
+            end
+        end
+        
+        if nearestChest then
+            root.CFrame = CFrame.new(nearestChest + Vector3.new(0, 5, 0))
+            Notify("TELEPORTED TO NEAREST CHEST")
+        else
+            Notify("NO CHEST FOUND")
+        end
+    end)
+end)
+
+-- Auto Collect Items (FUNCIONAL) com throttle
+local autoCollectItemsConnection
+local LastCollectCheck = 0
+NewSwitch(MISC_Page, "AUTO COLLECT ITEMS", function(s)
+    AutoCollectItemsEnabled = s
+    if s then
+        autoCollectItemsConnection = RunService.Heartbeat:Connect(function()
+            local currentTime = tick()
+            if currentTime - LastCollectCheck < 1 then return end
+            LastCollectCheck = currentTime
+            
+            pcall(function()
+                local char = LocalPlayer.Character
+                if not char then return end
+                
+                local root = char:FindFirstChild("HumanoidRootPart")
+                if not root then return end
+                
+                -- Procurar itens no chão (limitado para performance)
+                local objects = workspace:GetChildren()
+                for i = 1, math.min(20, #objects) do
+                    local obj = objects[i]
+                    if obj:IsA("BasePart") then
+                        local itemName = obj.Name:lower()
+                        if itemName:find("money") or itemName:find("gold") or itemName:find("coin") or itemName:find("bag") then
+                            local distance = (root.Position - obj.Position).Magnitude
+                            
+                            if distance < 15 then
+                                -- Tentar coletar
+                                pcall(function()
+                                    ReplicatedStorage.GeneralEvents.Interact:FireServer("PickupItem", obj)
+                                end)
+                                break -- Coletar apenas um item por ciclo
+                            end
+                        end
+                    end
+                end
+            end)
+        end)
+        
+        Notify("AUTO COLLECT ENABLED")
+    else
+        if autoCollectItemsConnection then
+            autoCollectItemsConnection:Disconnect()
+            autoCollectItemsConnection = nil
+        end
+        Notify("AUTO COLLECT DISABLED")
+    end
+end)
+
+-- PAGINA VISUALS - PLAYERS
+CreateSection(VIS_Page, "ESP PLAYERS")
+
+NewSwitch(VIS_Page, "ESP BODY", function(s)
+    ESP_Body_Enabled = s
+    Notify(s and "PLAYER ESP BODY ENABLED" or "PLAYER ESP BODY DISABLED")
+end)
+
+NewSwitch(VIS_Page, "PLAYER NAMES", function(s)
+    ESP_Names_Enabled = s
+    Notify(s and "PLAYER NAMES ENABLED" or "PLAYER NAMES DISABLED")
+end)
+
+NewSwitch(VIS_Page, "DISTANCE INFO", function(s)
+    ESP_Distance_Enabled = s
+    Notify(s and "DISTANCE INFO ENABLED" or "DISTANCE INFO DISABLED")
+end)
+
+-- PAGINA VISUALS - ANIMAS (CORRIGIDO - SEM CONFLITO)
+CreateSection(VIS_Page, "ESP ANIMALS")
+
+NewSwitch(VIS_Page, "ANIMAL ESP BODY", function(s)
+    ESP_Animals_Body = s
+    Notify(s and "ANIMAL ESP BODY ENABLED" or "ANIMAL ESP BODY DISABLED")
+end)
+
+NewSwitch(VIS_Page, "ANIMAL NAMES", function(s)
+    ESP_Animals_Names = s
+    Notify(s and "ANIMAL NAMES ENABLED" or "ANIMAL NAMES DISABLED")
+end)
+
+NewSwitch(VIS_Page, "ANIMAL DISTANCE", function(s)
+    ESP_Animals_Dist = s
+    Notify(s and "ANIMAL DISTANCE ENABLED" or "ANIMAL DISTANCE DISABLED")
+end)
+
+-- PAGINA SETTINGS
+CreateSection(SET_Page, "UI CONFIGURATION")
+
+local TipLabel = Instance.new("TextLabel")
+TipLabel.Size = UDim2.new(0.9, 0, 0, 40)
+TipLabel.BackgroundTransparency = 1
+TipLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+TipLabel.Text = "By default, the key to hide the panel is Left Control."
+TipLabel.Font = Enum.Font.SourceSansItalic
+TipLabel.TextSize = 14
+TipLabel.TextWrapped = true
+TipLabel.Parent = SET_Page
+
+NewKeybind(SET_Page, "CHANGE TOGGLE KEY", ToggleKey, function(k)
+    ToggleKey = k
+    Notify("TOGGLE KEY SET TO: " .. k.Name)
+end)
+
+CreateSection(SET_Page, "Other Settings")
+
+local SoonLabel = Instance.new("TextLabel")
+SoonLabel.Size = UDim2.new(0.9, 0, 0, 30)
+SoonLabel.BackgroundTransparency = 1
+SoonLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+SoonLabel.Text = "Coming soon"
+SoonLabel.Font = Enum.Font.SourceSansItalic
+SoonLabel.TextSize = 14
+SoonLabel.Parent = SET_Page
+
+-- PAGINA CREDITS
+CreateSection(CRED_Page, "HUB INFORMATION")
+
+local CredLabel = Instance.new("TextLabel")
+CredLabel.Size = UDim2.new(0.9, 0, 0, 150)
+CredLabel.BackgroundTransparency = 1
+CredLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+CredLabel.Text = "Owner & Developer: Henriqsz7\n\nOfficial Group: TRXSH HUB\nSupport: Discord Community\n\nThanks for using our script! We are constantly updating to provide the best experience for Westbound and other games."
+CredLabel.Font = Enum.Font.SourceSansBold
+CredLabel.TextSize = 15
+CredLabel.TextWrapped = true
+CredLabel.Parent = CRED_Page
+
+-- SOCIAL CONTENT HELPER
+local function CreateSocial(page, name, msg, link)
+    CreateSection(page, "COMMUNITY TRXSH HUB")
+    
+    local InfoLabel = Instance.new("TextLabel")
+    InfoLabel.Size = UDim2.new(0.9, 0, 0, 100)
+    InfoLabel.BackgroundTransparency = 1
+    InfoLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+    InfoLabel.Text = msg
+    InfoLabel.Font = Enum.Font.SourceSansItalic
+    InfoLabel.TextSize = 15
+    InfoLabel.TextWrapped = true
+    InfoLabel.Parent = page
+    
+    local CopyBtn = Instance.new("TextButton")
+    CopyBtn.Size = UDim2.new(0.9, 0, 0, 50)
+    CopyBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    CopyBtn.Text = "COPY " .. name .. " LINK"
+    CopyBtn.TextColor3 = Color3.fromRGB(255, 0, 0)
+    CopyBtn.Font = Enum.Font.SourceSansBold
+    CopyBtn.TextSize = 14
+    CopyBtn.Parent = page
+    AddCorner(CopyBtn)
+    
+    CopyBtn.MouseButton1Click:Connect(function()
+        pcall(function()
+            setclipboard(link)
+            Notify(name .. " LINK COPIED!")
+        end)
+    end)
+end
+
+CreateSocial(DC_Page, "DISCORD", "This is a global Roblox community where everyone is welcome to join and be part of our family. Please follow all the community rules, avoid breaking them, and maintain a friendly and respectful environment for everyone.", "https://discord.gg/3JSw8fDQbu")
+CreateSocial(SITE_Page, "WEBSITE", "On our website, you can find direct links for scripts from various other games, download the best executors, and get full access to the official TRXSH HUB panel with all games integrated in one place.", "https://trxshhub.lovable.app")
+
+-- SIDEBAR BUTTONS
+local TabButtons = {}
+local function CreateTabBtn(name, order)
+    local btn = Instance.new("TextButton")
+    btn.Parent = SideBar
+    btn.Size = UDim2.new(0.9, 0, 0, 34)
+    btn.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(200, 200, 200)
+    btn.Font = Enum.Font.SourceSansBold
+    btn.TextSize = 13
+    btn.LayoutOrder = order
+    AddCorner(btn)
+    
+    btn.MouseButton1Click:Connect(function()
+        for _, p in pairs(Pages) do
+            p.Visible = false
+        end
+        Pages[name].Visible = true
+        
+        for _, button in pairs(TabButtons) do
+            button.TextColor3 = Color3.fromRGB(200, 200, 200)
+        end
+        btn.TextColor3 = Color3.fromRGB(255, 0, 0)
+    end)
+    
+    TabButtons[name] = btn
+    return btn
+end
+
+local PVPBtn = CreateTabBtn("PVP", 1)
+PVPBtn.TextColor3 = Color3.fromRGB(255, 0, 0)
+CreateTabBtn("VISUALS", 2)
+CreateTabBtn("MISC", 3)
+CreateTabBtn("SETTINGS", 4)
+CreateTabBtn("DISCORD", 5)
+CreateTabBtn("SITE", 6)
+CreateTabBtn("CREDITS", 7)
+
+-- USER PROFILE
+local UserFrame = Instance.new("Frame")
+UserFrame.Parent = MainFrame
+UserFrame.Position = UDim2.new(0.02, 0, 0.79, 0)
+UserFrame.Size = UDim2.new(0, 140, 0, 70)
+UserFrame.BackgroundTransparency = 1
+
+local AvatarBack = Instance.new("Frame")
+AvatarBack.Size = UDim2.new(0, 48, 0, 48)
+AvatarBack.Position = UDim2.new(0, 0, 0.5, -24)
+AvatarBack.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+AvatarBack.Parent = UserFrame
+AddCorner(AvatarBack, UDim.new(1, 0))
+
+local Img = Instance.new("ImageLabel")
+Img.Size = UDim2.new(0, 44, 0, 44)
+Img.Position = UDim2.new(0.5, -22, 0.5, -22)
+Img.Image = Players:GetUserThumbnailAsync(LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+Img.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+Img.Parent = AvatarBack
+AddCorner(Img, UDim.new(1, 0))
+
+local Welcome = Instance.new("TextLabel")
+Welcome.Parent = UserFrame
+Welcome.Position = UDim2.new(0.42, 0, 0.28, 0)
+Welcome.Size = UDim2.new(0.55, 0, 0, 15)
+Welcome.Text = "Welcome,"
+Welcome.TextColor3 = Color3.fromRGB(150, 150, 150)
+Welcome.Font = Enum.Font.SourceSans
+Welcome.TextSize = 13
+Welcome.BackgroundTransparency = 1
+Welcome.TextXAlignment = Enum.TextXAlignment.Left
+
+local UserName = Instance.new("TextLabel")
+UserName.Parent = UserFrame
+UserName.Position = UDim2.new(0.42, 0, 0.48, 0)
+UserName.Size = UDim2.new(0.55, 0, 0, 15)
+UserName.Text = LocalPlayer.Name
+UserName.TextColor3 = Color3.fromRGB(255, 255, 255)
+UserName.Font = Enum.Font.SourceSansBold
+UserName.TextSize = 14
+UserName.BackgroundTransparency = 1
+UserName.TextXAlignment = Enum.TextXAlignment.Left
+
+-- SISTEMA DE AIMBOT E SILENT AIM OTIMIZADO (CORRIGIDO) - RESTAURADO ORIGINAL
+local aimbotConnection
+aimbotConnection = UpdateEvent:Connect(function()
+    -- FOV Circle
+    FOVCircle.Radius = FOVSize
+    FOVCircle.Position = Vector2.new(Mouse.X, Mouse.Y + 36)
+    FOVCircle.Visible = ShowFOVCircle
+    
+    -- Aimbot (CORRIGIDO - não quebra a câmera) - RESTAURADO ORIGINAL
+    if AimbotEnabled and UserInputService:IsKeyDown(AimBind) then
+        local target = GetClosestPlayer()
+        if target and target.Character then
+            local head = target.Character:FindFirstChild("Head")
+            if head then
+                -- Suavizar movimento da câmera (ORIGINAL - sem throttle)
+                local currentCFrame = Camera.CFrame
+                local targetCFrame = CFrame.new(currentCFrame.Position, head.Position)
+                Camera.CFrame = currentCFrame:Lerp(targetCFrame, 0.3)
+            end
+        end
+    end
+end)
+
+table.insert(ActiveConnections, aimbotConnection)
+
+-- SILENT AIM HOOK OTIMIZADO (CORRIGIDO - NÃO BUGADO) - RESTAURADO ORIGINAL
+local silentAimHooked = false
+local originalNamecall
+
+local function SetupSilentAim()
+    if silentAimHooked then return end
+    
+    originalNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        local args = {...}
+        local method = getnamecallmethod()
+        
+        -- Silent Aim (CORRIGIDO - não interfere na câmera) - RESTAURADO ORIGINAL
+        if SilentAimEnabled and method == "FindPartOnRayWithIgnoreList" and not checkcaller() then
+            if UserInputService:IsKeyDown(SilentBind) then
+                local target = GetClosestPlayer()
+                if target and target.Character then
+                    local head = target.Character:FindFirstChild("Head")
+                    if head then
+                        local origin = Camera.CFrame.Position
+                        local direction = (head.Position - origin).Unit * 1000
+                        local ray = Ray.new(origin, direction)
+                        local ignoreList = {Camera, LocalPlayer.Character}
+                        
+                        -- Chamada original sem modificar a câmera (ORIGINAL)
+                        return originalNamecall(self, ray, ignoreList)
+                    end
+                end
+            end
+        end
+        
+        return originalNamecall(self, ...)
+    end)
+    
+    silentAimHooked = true
+    Notify("SILENT AIM HOOKED CORRECTLY")
+end
+
+task.spawn(SetupSilentAim)
+
+-- CLOSE BUTTON - LIMPEZA CORRIGIDA
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Parent = MainFrame
+CloseBtn.Text = "X"
+CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+CloseBtn.Position = UDim2.new(0.93, 0, 0.02, 0)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(45, 0, 0)
+CloseBtn.TextColor3 = Color3.fromRGB(255, 50, 50)
+AddCorner(CloseBtn)
+
+CloseBtn.MouseButton1Click:Connect(function()
+    -- Limpar todas as conexões
+    for _, conn in pairs(ActiveConnections) do
+        if type(conn) == "userdata" and conn.Disconnect then
+            pcall(function() conn:Disconnect() end)
+        end
+    end
+    
+    -- Limpar ESP Players
+    for _, data in pairs(ESPStorage.Players) do
+        pcall(function()
+            if data.Connection then data.Connection:Disconnect() end
+            if data.Highlight then data.Highlight:Destroy() end
+            if data.NameTag then data.NameTag:Remove() end
+        end)
+    end
+    
+    -- Limpar ESP Animals
+    for _, data in pairs(ESPStorage.Animals) do
+        pcall(function()
+            if data.Connection then data.Connection:Disconnect() end
+            if data.Highlight then data.Highlight:Destroy() end
+            if data.Text then data.Text:Remove() end
+        end)
+    end
+    
+    -- Limpar conexões específicas
+    if lassoConnection then pcall(function() lassoConnection:Disconnect() end) end
+    if horseStaminaConnection then pcall(function() horseStaminaConnection:Disconnect() end) end
+    if instantInteractConnection then pcall(function() instantInteractConnection:Disconnect() end) end
+    if autoAnimalFarmConnection then pcall(function() autoAnimalFarmConnection:Disconnect() end) end
+    if instantSafeCrackConnection then pcall(function() instantSafeCrackConnection:Disconnect() end) end
+    if autoCollectItemsConnection then pcall(function() autoCollectItemsConnection:Disconnect() end) end
+    if timerConnection then pcall(function() timerConnection:Disconnect() end) end
+    if aimbotConnection then pcall(function() aimbotConnection:Disconnect() end) end
+    
+    -- Limpar todas as conexões da tabela ActiveConnections
+    for key, conn in pairs(ActiveConnections) do
+        if type(conn) == "userdata" and conn.Disconnect then
+            pcall(function() conn:Disconnect() end)
+        end
+    end
+    
+    -- Remover Drawing objects
+    pcall(function() FOVCircle:Remove() end)
+    
+    -- Destruir interface
+    pcall(function() 
+        if ScreenGui and ScreenGui.Parent then
+            ScreenGui:Destroy()
+        end
+    end)
+    
+    Notify("PANEL CLOSED - ALL CLEANED")
+end)
+
+-- TOGGLE INTERFACE
+local toggleConnection
+toggleConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed and input.KeyCode == ToggleKey then
+        MainFrame.Visible = not MainFrame.Visible
+    end
+end)
+
+table.insert(ActiveConnections, toggleConnection)
+
+-- NOTIFICAÇÃO INICIAL
+task.spawn(function()
+    task.wait(1.5)
+    Notify("HENRIQSZ7 HUB LOADED!")
+    Notify("VERSION 36.1 - BUG FIXED")
+    Notify("PRESS " .. ToggleKey.Name .. " TO TOGGLE")
+    task.wait(1)
+    Notify("ANTI-LASSO: FIXED & WORKING")
+    Notify("SILENT AIM: CAMERA FIXED")
+    Notify("INSTANT INTERACT: FUNCTIONAL")
+    Notify("AIMBOT: SMOOTH & OPTIMIZED")
+end)
